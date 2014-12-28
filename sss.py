@@ -142,8 +142,6 @@ def main():
             help='extra command')
     parser.add_argument('-t' ,'--tabs_count', type=int, default=1,
             help='number of tabs per host')
-    parser.add_argument('--install', action='store_true', default=False,
-            help='install')
     args = parser.parse_args()
 
     install()
