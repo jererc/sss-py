@@ -4,16 +4,13 @@ import argparse
 import json
 import subprocess
 import re
-import getpass
+from getpass import getuser
 
-
-BIN_PATH = '/usr/local/bin'
-USERS = []
-DOMAINS = ['']
 CACHE_FILENAME = 'cache.json'
-SSH_CMD = ['ssh', '-A', '-o', 'ConnectTimeout=5']
+SSH_CMD = ['ssh', '-A', '-o', 'PasswordAuthentication=no',
+    '-o', 'StrictHostKeyChecking=no', '-o', 'ConnectTimeout=3']
 BASENAME = os.path.splitext(os.path.basename(__file__))[0]
-RE_RANGE = re.compile(r'(\[(\d+)-(\d+)\])')
+BIN_PATH = '/usr/local/bin'
 
 try:
     from local_settings import *
@@ -21,82 +18,74 @@ except ImportError:
     pass
 
 
+class bcolors(object):
+    HEADER = '\033[95m'
+    OKBLUE = '\033[94m'
+    OKGREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+
+
 class Cache(object):
 
     def __init__(self):
         basepath = os.path.dirname(os.path.realpath(__file__))
         self.cache_file = os.path.join(basepath, CACHE_FILENAME)
+        self._load_cache()
 
-    def _get_cache(self):
-        cache = {}
+    def _load_cache(self):
+        self.cache = {}
         if os.path.exists(self.cache_file):
             with open(self.cache_file) as fd:
                 try:
-                    cache = json.loads(fd.read())
+                    self.cache = json.loads(fd.read())
                 except ValueError:
                     pass
-        return cache
 
-    def save(self, cache):
-        hosts = self._get_cache()
-        hosts.update(cache)
+    def save(self, host, user):
+        self.cache.setdefault(host, {'count': 0})
+        self.cache[host]['user'] = user
+        self.cache[host]['count'] += 1
         with open(self.cache_file, 'wb') as fd:
-            fd.write(json.dumps(hosts))
+            fd.write(json.dumps(self.cache))
 
-    def get_host_info(self, host):
-        info = self._get_cache().get(host)
-        if info is None:
-            domains = DOMAINS
-            users = USERS or [getpass.getuser()]
-        else:
-            domain = info['domain']
-            domains = [domain] + [v for v in DOMAINS if v != domain]
-            user = info['user']
-            users = [user] + [v for v in USERS if v != user]
-        return domains, users
+    def _search_regexes(self, regexes, value):
+        for regex in regexes:
+            if not regex.search(value):
+                return False
+        return True
 
+    def iter_cache_hosts(self, hints):
+        res = []
+        re_hints = [re.compile(h, re.I) for h in hints]
+        for host, info in self.cache.items():
+            if self._search_regexes(re_hints, host):
+                res.append((info['count'], host, info['user']))
+        return sorted(res, reverse=True)
 
-class Term(object):
+    def iter_hosts(self, hints):
+        last = None
 
-    SCRIPT_MAIN = """tell application "iTerm"
-        tell the current terminal
-    %s
-        end tell
-    end tell
-    """
-    SCRIPT_TAB = """
-            launch session "Default Session"
-            tell the last session
-                %s
-            end tell
-    """
-    SCRIPT_CMD = """
-                write text \"%s\"
-    """
+        if len(hints) == 1:
+            if '@' in hints[0]:
+                user, host = hints[0].split('@', 1)
+            else:
+                user = ''
+                host = hints[0]
 
-    def __init__(self, hosts, extra_cmd, tabs_count=1):
-        def get_cmds(host):
-            cmd = '%s %s' % (BASENAME, host)
-            return (cmd, extra_cmd) if extra_cmd else (cmd,)
+            cache_user = self.cache.get(host, {}).get('user')
+            if cache_user:
+                yield host, user or cache_user or getuser()
+            else:
+                last = host, user or getuser()
 
-        self.tab_cmds = []
-        for host in hosts:
-            for i in range(tabs_count):
-                self.tab_cmds.append(get_cmds(host))
-
-    def get_script(self):
-        script_tabs = [self.SCRIPT_TAB % ''.join([self.SCRIPT_CMD % c for c in tc])
-            for tc in self.tab_cmds]
-        return self.SCRIPT_MAIN % ''.join(script_tabs)
-
-    def start(self):
-        cmd = ['osascript']
-        script = self.get_script()
-        for line in script.splitlines():
-            if line.strip():
-                cmd.extend(['-e', line])
-        return subprocess.call(cmd)
-
+        for count, host, user in self.iter_cache_hosts(hints):
+            yield host, user
+        if last:
+            yield last
 
 def install():
     dst = os.path.join(BIN_PATH.rstrip('/'), BASENAME)
@@ -107,57 +96,25 @@ def install():
         except OSError, e:
             print 'failed to create symlink %s: %s' % (dst, str(e))
 
-def get_hosts(hosts):
-    hosts_ = []
-    for host in hosts:
-        res = RE_RANGE.search(host)
-        if not res:
-            hosts_.append(host)
-        else:
-            for i in range(int(res.group(2)), int(res.group(3)) + 1):
-                hosts_.append(RE_RANGE.sub(str(i), host))
-    return hosts_
-
-def connect(hostname):
+def connect(hints):
     cache = Cache()
-    domains, users = cache.get_host_info(hostname)
-    for domain in domains:
-        for user in users:
-            host = '%s@%s%s' % (user, hostname, '.%s' % domain if domain else '')
-            res = subprocess.call(SSH_CMD + [host])
-            if res == 0:
-                cache.save({hostname: {
-                        'user': user,
-                        'domain': domain,
-                        }})
-                return
-            print 'failed to connect to %s' % host
-    print 'failed to connect to %s' % hostname
+    for host, user in cache.iter_hosts(hints):
+        host_ = '%s@%s' % (user, host)
+        res = subprocess.call(SSH_CMD + [host_, 'exit'])
+        if res == 0:
+            print '%sconnected to %s%s' % (bcolors.OKGREEN, host_, bcolors.ENDC)
+            cache.save(host, user)
+            subprocess.call(SSH_CMD + [host_])
+            return
+        print 'failed to connect to %s' % host_
 
 def main():
-    parser = argparse.ArgumentParser(description='Open SSH sessions.')
-    parser.add_argument('hosts', metavar='host', type=str, nargs='*',
-            help='list of hostnames (accepts [x-y] range wildcard)')
-    parser.add_argument('-c' ,'--extra_cmd', type=str,
-            help='extra command')
-    parser.add_argument('-t' ,'--tabs_count', type=int, default=1,
-            help='number of tabs per host')
-    args = parser.parse_args()
-
     install()
 
-    if not args.hosts:
-        print 'missing hosts'
-        return
-
-    hosts = get_hosts(args.hosts)
-    print 'connecting to %s' % ', '.join(hosts)
-
-    if len(hosts) == 1 and args.tabs_count == 1:
-        connect(hosts[0])
-    else:
-        Term(hosts, extra_cmd=args.extra_cmd,
-                tabs_count=args.tabs_count).start()
+    parser = argparse.ArgumentParser(description='SSH search')
+    parser.add_argument('hints', nargs='+', type=str, help='host hints')
+    args = parser.parse_args()
+    connect(args.hints)
 
 
 if __name__ == '__main__':
