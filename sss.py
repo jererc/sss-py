@@ -58,7 +58,7 @@ class Cache(object):
                 return False
         return True
 
-    def iter_cache_hosts(self, hints):
+    def get_cache_hosts(self, hints):
         res = []
         re_hints = [re.compile(h, re.I) for h in hints]
         for host, info in self.cache.items():
@@ -66,8 +66,9 @@ class Cache(object):
                 res.append((info['count'], host, info['user']))
         return sorted(res, reverse=True)
 
-    def iter_hosts(self, hints):
-        last = None
+    def get_hosts_lists(self, hints):
+        cache_list = []
+        new_list = []
 
         if len(hints) == 1:
             if '@' in hints[0]:
@@ -78,14 +79,13 @@ class Cache(object):
 
             cache_user = self.cache.get(host, {}).get('user')
             if cache_user:
-                yield host, user or cache_user or getuser()
+                cache_list.append((host, user or cache_user or getuser()))
             else:
-                last = host, user or getuser()
+                new_list.append((host, user or getuser()))
 
-        for count, host, user in self.iter_cache_hosts(hints):
-            yield host, user
-        if last:
-            yield last
+        for count, host, user in self.get_cache_hosts(hints):
+            cache_list.append((host, user))
+        return cache_list, new_list
 
 def install():
     dst = os.path.join(BIN_PATH.rstrip('/'), BASENAME)
@@ -96,9 +96,28 @@ def install():
         except OSError, e:
             print 'failed to create symlink %s: %s' % (dst, str(e))
 
+def select_host(hosts):
+    for i, (host, user) in enumerate(hosts):
+        print '%2d) %s' % (i + 1, host)
+
+    while True:
+        s = raw_input('? ')
+        if s:
+            try:
+                return hosts[int(s) - 1]
+            except Exception, e:
+                print str(e)
+
 def connect(hints):
     cache = Cache()
-    for host, user in cache.iter_hosts(hints):
+
+    cached, new = cache.get_hosts_lists(hints)
+    if len(cached) > 1:
+        hosts = [select_host(cached + new)]
+    else:
+        hosts = cached + new
+
+    for host, user in hosts:
         host_ = '%s@%s' % (user, host)
         res = subprocess.call(SSH_CMD + [host_, 'exit'])
         if res == 0:
