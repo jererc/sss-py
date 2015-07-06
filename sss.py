@@ -1,16 +1,15 @@
 #!/usr/bin/env python
-import os
+import os.path
 import argparse
 import json
 import subprocess
 import re
 from getpass import getuser
 
-CACHE_FILENAME = 'cache.json'
+
+CACHE_FILE = os.path.join(os.path.expanduser('~'), 'sss_cache.json')
 SSH_CMD = ['ssh', '-A', '-o', 'PasswordAuthentication=no',
     '-o', 'StrictHostKeyChecking=no', '-o', 'ConnectTimeout=3']
-BASENAME = os.path.splitext(os.path.basename(__file__))[0]
-BIN_PATH = '/usr/local/bin'
 
 try:
     from local_settings import *
@@ -31,9 +30,8 @@ class bcolors(object):
 
 class Cache(object):
 
-    def __init__(self):
-        basepath = os.path.dirname(os.path.realpath(__file__))
-        self.cache_file = os.path.join(basepath, CACHE_FILENAME)
+    def __init__(self, cache_file=CACHE_FILE):
+        self.cache_file = cache_file
         self._load_cache()
 
     def _load_cache(self):
@@ -82,19 +80,13 @@ class Cache(object):
                 cache_list.append((host, user or cache_user or getuser()))
             else:
                 new_list.append((host, user or getuser()))
+        else:
+            cache_user = None
 
-        for count, host, user in self.get_cache_hosts(hints):
-            cache_list.append((host, user))
+        if not cache_user:
+            for count, host, user in self.get_cache_hosts(hints):
+                cache_list.append((host, user))
         return cache_list, new_list
-
-def install():
-    dst = os.path.join(BIN_PATH.rstrip('/'), BASENAME)
-    if not os.path.exists(dst):
-        try:
-            os.symlink(os.path.realpath(__file__), dst)
-            print 'created symlink %s' % dst
-        except OSError, e:
-            print 'failed to create symlink %s: %s' % (dst, str(e))
 
 def select_host(hosts):
     for i, (host, user) in enumerate(hosts):
@@ -128,8 +120,6 @@ def connect(hints):
         print 'failed to connect to %s' % host_
 
 def main():
-    install()
-
     parser = argparse.ArgumentParser(description='SSH search')
     parser.add_argument('hints', nargs='+', type=str, help='host hints')
     args = parser.parse_args()
